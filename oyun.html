@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yakala — 30 saniyelik refleks oyunu</title>
+
+<!-- ===================== X PLAYER CARD ETİKETLERİ =====================
+     Bu dosyayı HTTPS bir alan adına koy (örn. https://site.com/oyun.html)
+     ve aşağıdaki üç yeri kendine göre değiştir:
+       1) twitter:site      -> kendi X kullanıcı adın
+       2) twitter:player    -> bu sayfanın tam HTTPS adresi
+       3) twitter:image     -> oyun yüklenmeden önce görünen kapak görseli
+     Sonra linki X'te paylaş. X iframe izni verirse oyun postun içinde açılır.
+     ==================================================================== -->
+<meta name="twitter:card" content="player">
+<meta name="twitter:site" content="@kullaniciadin">
+<meta name="twitter:title" content="Yakala — 30 saniyede kaç nokta yakalarsın?">
+<meta name="twitter:description" content="Postun içinde oyna. Noktalar küçülmeden dokun.">
+<meta name="twitter:image" content="https://site.com/kapak.png">
+<meta name="twitter:player" content="https://site.com/oyun.html">
+<meta name="twitter:player:width" content="420">
+<meta name="twitter:player:height" content="747">
+
+<!-- Open Graph: X bulamazsa buradan da okur -->
+<meta property="og:title" content="Yakala — 30 saniyede kaç nokta yakalarsın?">
+<meta property="og:image" content="https://site.com/kapak.png">
+<meta property="og:url" content="https://site.com/oyun.html">
+
+<style>
+  :root {
+    --bg: #14213d;
+    --ink: #fdf6e3;
+    --dot: #ffb703;
+    --dot-hit: #8ecae6;
+    --muted: rgba(253,246,227,.55);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 14px 18px 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  header strong { font-size: 2rem; font-weight: 600; }
+  header span { color: var(--muted); font-size: .95rem; }
+  canvas {
+    flex: 1;
+    width: 100%;
+    display: block;
+    cursor: crosshair;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    padding: 24px;
+    background: rgba(20,33,61,.92);
+  }
+  .overlay[hidden] { display: none; }
+  .overlay h1 { font-size: 2.6rem; font-weight: 600; letter-spacing: -.02em; }
+  .overlay p { color: var(--muted); max-width: 28ch; line-height: 1.45; }
+  .overlay .big { font-size: 4rem; font-weight: 600; color: var(--dot); }
+  button {
+    margin-top: 10px;
+    font: inherit;
+    font-size: 1.1rem;
+    padding: 12px 28px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--dot);
+    color: var(--bg);
+    cursor: pointer;
+  }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header>
+  <strong id="score">0</strong>
+  <span id="time">30 sn</span>
+</header>
+<canvas id="c"></canvas>
+
+<div class="overlay" id="start">
+  <h1>Yakala</h1>
+  <p>Beliren noktalara küçülüp kaybolmadan dokun. 30 saniyen var.</p>
+  <button id="startBtn">Başla</button>
+</div>
+
+<div class="overlay" id="end" hidden>
+  <p>Skorun</p>
+  <div class="big" id="final">0</div>
+  <p id="best"></p>
+  <button id="againBtn">Tekrar oyna</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const startOv = document.getElementById('start');
+  const endOv = document.getElementById('end');
+  const finalEl = document.getElementById('final');
+  const bestEl = document.getElementById('best');
+
+  const GAME_SECONDS = 30;
+  let dots = [], score = 0, timeLeft = GAME_SECONDS, running = false;
+  let lastSpawn = 0, lastTick = 0, raf = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+  function spawn() {
+    const r = canvas.getBoundingClientRect();
+    const radius = 22 + Math.random() * 18;
+    dots.push({
+      x: radius + Math.random() * (r.width - radius * 2),
+      y: radius + Math.random() * (r.height - radius * 2),
+      r: radius, maxR: radius,
+      born: performance.now(),
+      life: 1400 + Math.random() * 900,   // ms, zorluk için küçült
+      hit: false
+    });
+  }
+
+  function draw(now) {
+    const r = canvas.getBoundingClientRect();
+    ctx.clearRect(0, 0, r.width, r.height);
+    dots = dots.filter(d => {
+      const age = now - d.born;
+      if (d.hit) return age - d.hitAt < 160;
+      return age < d.life;
+    });
+    for (const d of dots) {
+      const age = now - d.born;
+      if (d.hit) {
+        const t = (age - d.hitAt) / 160;
+        ctx.globalAlpha = 1 - t;
+        ctx.fillStyle = css('--dot-hit');
+        ctx.beginPath(); ctx.arc(d.x, d.y, d.maxR * (1 + t * .6), 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      } else {
+        d.r = d.maxR * (1 - age / d.life);
+        ctx.fillStyle = css('--dot');
+        ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  function loop(now) {
+    if (!running) return;
+    if (now - lastSpawn > 650) { spawn(); lastSpawn = now; }
+    if (now - lastTick > 1000) {
+      timeLeft--; lastTick = now;
+      timeEl.textContent = timeLeft + ' sn';
+      if (timeLeft <= 0) return finish();
+    }
+    draw(now);
+    raf = requestAnimationFrame(loop);
+  }
+
+  function tap(e) {
+    if (!running) return;
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    const x = p.clientX - rect.left, y = p.clientY - rect.top;
+    const now = performance.now();
+    for (const d of dots) {
+      if (d.hit) continue;
+      if (Math.hypot(d.x - x, d.y - y) <= d.r + 8) {
+        d.hit = true; d.hitAt = now - d.born;
+        score += d.r < d.maxR * .4 ? 2 : 1;   // geç yakalarsan 2 puan
+        scoreEl.textContent = score;
+        break;
+      }
+    }
+    e.preventDefault();
+  }
+  canvas.addEventListener('pointerdown', tap);
+
+  function start() {
+    resize();
+    dots = []; score = 0; timeLeft = GAME_SECONDS;
+    scoreEl.textContent = '0'; timeEl.textContent = GAME_SECONDS + ' sn';
+    startOv.hidden = true; endOv.hidden = true;
+    running = true;
+    lastSpawn = lastTick = performance.now();
+    raf = requestAnimationFrame(loop);
+  }
+
+  function finish() {
+    running = false;
+    cancelAnimationFrame(raf);
+    finalEl.textContent = score;
+    let best = score;
+    try {
+      best = Math.max(score, Number(localStorage.getItem('yakala-best') || 0));
+      localStorage.setItem('yakala-best', best);
+    } catch (_) {}
+    bestEl.textContent = best > score ? 'Rekorun: ' + best : 'Yeni rekor!';
+    endOv.hidden = false;
+  }
+
+  document.getElementById('startBtn').addEventListener('click', start);
+  document.getElementById('againBtn').addEventListener('click', start);
+  resize();
+})();
+</script>
+</body>
+</html>
